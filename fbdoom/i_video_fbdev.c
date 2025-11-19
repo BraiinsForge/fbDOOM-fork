@@ -18,7 +18,7 @@
 // $Log:$
 //
 // DESCRIPTION:
-//	DOOM graphics stuff for X11, UNIX.
+//	DOOM graphics stuff for framebuffer, patched for STM32MP1 landscape display
 //
 //-----------------------------------------------------------------------------
 
@@ -44,11 +44,17 @@ rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 #include <stdarg.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <sys/socket.h>
+// #include <sys/socket.h>  // Removed - not needed for framebuffer
 #include <linux/fb.h>
 #include <sys/ioctl.h>
 
 //#define CMAP256
+
+// STM32MP1 display configuration
+#define FB_ROTATION_90      1   // Portrait LCD used in landscape mode
+#define FB_LINE_OFFSET      120 // First 120 lines are invisible
+#define FB_OFFSET_X        -320   // Horizontal offset (adjust game position left/right)
+#define FB_OFFSET_Y         40   // Vertical offset (adjust game position up/down)
 
 struct fb_var_screeninfo fb = {};
 int fb_scaling = 1;
@@ -119,9 +125,10 @@ void cmap_to_rgb565(uint16_t * out, uint8_t * in, int in_pixels)
     for (i = 0; i < in_pixels; i++)
     {
         c = colors[*in]; 
-        r = ((uint16_t)(c.r >> 3)) << 11;
-        g = ((uint16_t)(c.g >> 2)) << 5;
-        b = ((uint16_t)(c.b >> 3)) << 0;
+        // BGR565 format for STM32MP1 DRM framebuffer
+        r = ((uint16_t)(c.r >> 3)) << 0;  // Red at LSB
+        g = ((uint16_t)(c.g >> 2)) << 5;  // Green in middle
+        b = ((uint16_t)(c.b >> 3)) << 11; // Blue at MSB
         *out = (r | g | b);
 
         in++;
@@ -141,12 +148,26 @@ void cmap_to_fb(uint8_t * out, uint8_t * in, int in_pixels)
     for (i = 0; i < in_pixels; i++)
     {
         c = colors[*in];  /* R:8 G:8 B:8 format! */
-        r = (uint16_t)(c.r >> (8 - fb.red.length));
-        g = (uint16_t)(c.g >> (8 - fb.green.length));
-        b = (uint16_t)(c.b >> (8 - fb.blue.length));
-        pix = r << fb.red.offset;
-        pix |= g << fb.green.offset;
-        pix |= b << fb.blue.offset;
+        
+        // Check if we need to swap for BGR format
+        // For STM32 DRM, we typically have BGR565
+        if (fb.blue.offset > fb.red.offset) {
+            // BGR format - swap red and blue
+            b = (uint16_t)(c.b >> (8 - fb.blue.length));
+            g = (uint16_t)(c.g >> (8 - fb.green.length));
+            r = (uint16_t)(c.r >> (8 - fb.red.length));
+            pix = b << fb.blue.offset;
+            pix |= g << fb.green.offset;
+            pix |= r << fb.red.offset;
+        } else {
+            // RGB format - normal order
+            r = (uint16_t)(c.r >> (8 - fb.red.length));
+            g = (uint16_t)(c.g >> (8 - fb.green.length));
+            b = (uint16_t)(c.b >> (8 - fb.blue.length));
+            pix = r << fb.red.offset;
+            pix |= g << fb.green.offset;
+            pix |= b << fb.blue.offset;
+        }
 
         for (k = 0; k < fb_scaling; k++) {
             for (j = 0; j < fb.bits_per_pixel/8; j++) {
@@ -182,6 +203,10 @@ void I_InitGraphics (void)
 
     printf("I_InitGraphics: DOOM screen size: w x h: %d x %d\n", SCREENWIDTH, SCREENHEIGHT);
 
+#if FB_ROTATION_90
+    printf("I_InitGraphics: Display rotation enabled (90 degrees)\n");
+    printf("I_InitGraphics: Line offset: %d lines\n", FB_LINE_OFFSET);
+#endif
 
     i = M_CheckParmWithArgs("-scaling", 1);
     if (i > 0) {
@@ -189,16 +214,29 @@ void I_InitGraphics (void)
         fb_scaling = i;
         printf("I_InitGraphics: Scaling factor: %d\n", fb_scaling);
     } else {
+#if FB_ROTATION_90
+        // For rotated display: fb.yres is physical width (landscape)
+        // fb.xres is physical height - FB_LINE_OFFSET gives visible height
+        fb_scaling = fb.yres / SCREENWIDTH;
+        if ((fb.xres - FB_LINE_OFFSET) / SCREENHEIGHT < fb_scaling)
+            fb_scaling = (fb.xres - FB_LINE_OFFSET) / SCREENHEIGHT;
+#else
         fb_scaling = fb.xres / SCREENWIDTH;
         if (fb.yres / SCREENHEIGHT < fb_scaling)
             fb_scaling = fb.yres / SCREENHEIGHT;
+#endif
         printf("I_InitGraphics: Auto-scaling factor: %d\n", fb_scaling);
     }
 
 
     /* Allocate screen to draw to */
 	I_VideoBuffer = (byte*)Z_Malloc (SCREENWIDTH * SCREENHEIGHT, PU_STATIC, NULL);  // For DOOM to draw on
+#if FB_ROTATION_90
+	// Allocate for actual physical buffer: 640x1280 pixels at 16bpp
+	I_VideoBuffer_FB = (byte*)malloc(640 * 1280 * 2);
+#else
 	I_VideoBuffer_FB = (byte*)malloc(fb.xres * fb.yres * (fb.bits_per_pixel/8));     // For a single write() syscall to fbdev
+#endif
 
 	screenvisible = true;
 
@@ -400,6 +438,93 @@ void I_UpdateNoBlit (void)
 // I_FinishUpdate
 //
 
+#if FB_ROTATION_90
+// Rotated framebuffer rendering for landscape-oriented portrait display
+void I_FinishUpdate (void)
+{
+    int x, y;
+    unsigned char *src = I_VideoBuffer;
+    unsigned char *fbmem = I_VideoBuffer_FB;
+    
+    // Calculate bytes per pixel
+    int bpp = fb.bits_per_pixel / 8;
+    
+    // Physical framebuffer dimensions based on working GUI implementation
+    // The framebuffer is actually 640 wide x 1280 tall in memory
+    // But reports as 600x1280 due to the way it's configured
+    int fb_phys_width = 640;    // Physical width in pixels (columns)
+    int fb_phys_height = 1280;  // Physical height in pixels (rows)
+    int fb_visible_height = 480; // Visible rows (after 120 offset)
+    
+    // ACTUAL display dimensions (landscape view)
+    int display_width = 1280;   // Actual visible width in landscape
+    int display_height = 480;   // Actual visible height in landscape
+    
+    // Stride in bytes (pixels per row * bytes per pixel)
+    int stride = fb_phys_width * bpp;  // 640 * 2 = 1280 bytes
+    
+    // Clear framebuffer first
+    memset(fbmem, 0, fb_phys_width * fb_phys_height * bpp);
+    
+    // Draw with coordinate transformation matching working GUI
+    // GUI does: mirror X, then swap X<->Y
+    for (y = 0; y < SCREENHEIGHT; y++) {
+        for (x = 0; x < SCREENWIDTH; x++) {
+            unsigned char palindex = src[y * SCREENWIDTH + x];
+            struct color c = colors[palindex];
+            
+            // Apply transformation:
+            // Apply offset first, then mirror against the display center
+            
+            // Add offset to the game coordinate before transformation
+            int offset_x = x * fb_scaling + FB_OFFSET_X;
+            
+            // Mirror the entire offset position
+            int phys_col = (fb_phys_width - 1) - offset_x;
+            int phys_row = y * fb_scaling + FB_OFFSET_Y;
+            
+            // Draw scaled pixel
+            for (int sy = 0; sy < fb_scaling; sy++) {
+                for (int sx = 0; sx < fb_scaling; sx++) {
+                    int px = phys_row + sy;
+                    int py = phys_col + sx;
+                    
+                    // Check bounds against actual display dimensions
+                    if (px >= 0 && px < display_height && py >= 0 && py < display_width) {
+                        // Calculate pixel format
+                        uint32_t pix;
+                        if (fb.blue.offset > fb.red.offset) {
+                            // BGR format
+                            uint16_t r = (uint16_t)(c.r >> (8 - fb.red.length));
+                            uint16_t g = (uint16_t)(c.g >> (8 - fb.green.length));
+                            uint16_t b = (uint16_t)(c.b >> (8 - fb.blue.length));
+                            pix = (b << fb.blue.offset) | (g << fb.green.offset) | (r << fb.red.offset);
+                        } else {
+                            // RGB format
+                            uint16_t r = (uint16_t)(c.r >> (8 - fb.red.length));
+                            uint16_t g = (uint16_t)(c.g >> (8 - fb.green.length));
+                            uint16_t b = (uint16_t)(c.b >> (8 - fb.blue.length));
+                            pix = (r << fb.red.offset) | (g << fb.green.offset) | (b << fb.blue.offset);
+                        }
+                        
+                        // Write pixel
+                        unsigned char *pixel = fbmem + (py * stride) + (px * bpp);
+                        for (int j = 0; j < bpp; j++) {
+                            pixel[j] = (pix >> (j * 8)) & 0xFF;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Write entire framebuffer
+    lseek(fd_fb, 0, SEEK_SET);
+    write(fd_fb, I_VideoBuffer_FB, fb_phys_width * fb_phys_height * bpp);
+}
+
+#else
+// Original non-rotated rendering
 void I_FinishUpdate (void)
 {
     int y;
@@ -407,12 +532,8 @@ void I_FinishUpdate (void)
     unsigned char *line_in, *line_out;
 
     /* Offsets in case FB is bigger than DOOM */
-    /* 600 = fb heigt, 200 screenheight */
-    /* 600 = fb heigt, 200 screenheight */
-    /* 2048 =fb width, 320 screenwidth */
     y_offset     = (((fb.yres - (SCREENHEIGHT * fb_scaling)) * fb.bits_per_pixel/8)) / 2;
-    x_offset     = (((fb.xres - (SCREENWIDTH  * fb_scaling)) * fb.bits_per_pixel/8)) / 2; // XXX: siglent FB hack: /4 instead of /2, since it seems to handle the resolution in a funny way
-    //x_offset     = 0;
+    x_offset     = (((fb.xres - (SCREENWIDTH  * fb_scaling)) * fb.bits_per_pixel/8)) / 2;
     x_offset_end = ((fb.xres - (SCREENWIDTH  * fb_scaling)) * fb.bits_per_pixel/8) - x_offset;
 
     /* DRAW SCREEN */
@@ -428,12 +549,11 @@ void I_FinishUpdate (void)
             line_out += x_offset;
 #ifdef CMAP256
             for (fb_scaling == 1) {
-                memcpy(line_out, line_in, SCREENWIDTH); /* fb_width is bigger than Doom SCREENWIDTH... */
+                memcpy(line_out, line_in, SCREENWIDTH);
             } else {
                 //XXX FIXME fb_scaling support!
             }
 #else
-            //cmap_to_rgb565((void*)line_out, (void*)line_in, SCREENWIDTH);
             cmap_to_fb((void*)line_out, (void*)line_in, SCREENWIDTH);
 #endif
             line_out += (SCREENWIDTH * fb_scaling * (fb.bits_per_pixel/8)) + x_offset_end;
@@ -443,8 +563,9 @@ void I_FinishUpdate (void)
 
     /* Start drawing from y-offset */
     lseek(fd_fb, y_offset * fb.xres, SEEK_SET);
-    write(fd_fb, I_VideoBuffer_FB, (SCREENHEIGHT * fb_scaling * (fb.bits_per_pixel/8)) * fb.xres); /* draw only portion used by doom + x-offsets */
+    write(fd_fb, I_VideoBuffer_FB, (SCREENHEIGHT * fb_scaling * (fb.bits_per_pixel/8)) * fb.xres);
 }
+#endif
 
 //
 // I_ReadScreen
@@ -465,19 +586,6 @@ void I_ReadScreen (byte* scr)
 void I_SetPalette (byte* palette)
 {
 	int i;
-	//col_t* c;
-
-	//for (i = 0; i < 256; i++)
-	//{
-	//	c = (col_t*)palette;
-
-	//	rgb565_palette[i] = GFX_RGB565(gammatable[usegamma][c->r],
-	//								   gammatable[usegamma][c->g],
-	//								   gammatable[usegamma][c->b]);
-
-	//	palette += 3;
-	//}
-    
 
     /* performance boost:
      * map to the right pixel format over here! */
@@ -488,9 +596,6 @@ void I_SetPalette (byte* palette)
         colors[i].g = gammatable[usegamma][*palette++];
         colors[i].b = gammatable[usegamma][*palette++];
     }
-
-    /* Set new color map in kernel framebuffer driver */
-    //XXX FIXME ioctl(fd_fb, IOCTL_FB_PUTCMAP, colors);
 }
 
 // Given an RGB value, find the closest matching palette index.
