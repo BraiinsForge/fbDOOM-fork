@@ -43,11 +43,15 @@
 #endif
 
 #else
-	
+
 #define SHORT(x)  ((signed short) (x))
 #define LONG(x)   ((signed int) (x))
 
 #define SYS_LITTLE_ENDIAN
+
+// Provide SDL_SwapLE32 for NOSDL builds (assumes little-endian target)
+// On little-endian systems, no swap is needed
+#define SDL_SwapLE32(x) ((unsigned int)(x))
 
 #endif
 #endif
