@@ -642,21 +642,26 @@ static void NET_SV_ParseSYN(net_packet_t *packet, net_client_t *client,
     int num_players;
     int i;
 
+    fprintf(stderr, "SV_ParseSYN: got SYN from %s\n", NET_AddrToString(addr));
     NET_Log("server: processing SYN packet");
 
     // Read the magic number and check it is the expected one.
     if (!NET_ReadInt32(packet, &magic))
     {
+        fprintf(stderr, "SV_ParseSYN: FAIL - no magic number\n");
         NET_Log("server: error: no magic number for SYN");
         return;
     }
 
+    fprintf(stderr, "SV_ParseSYN: magic=0x%x\n", magic);
     switch (magic)
     {
         case NET_MAGIC_NUMBER:
+            fprintf(stderr, "SV_ParseSYN: magic OK\n");
             break;
 
         case NET_OLD_MAGIC_NUMBER:
+            fprintf(stderr, "SV_ParseSYN: FAIL - old magic\n");
             NET_Log("server: error: client using old magic number: %d", magic);
             NET_SV_SendReject(addr,
                 "You are using an old client version that is not supported by "
@@ -664,6 +669,7 @@ static void NET_SV_ParseSYN(net_packet_t *packet, net_client_t *client,
             return;
 
         default:
+            fprintf(stderr, "SV_ParseSYN: FAIL - wrong magic 0x%x\n", magic);
             NET_Log("server: error: wrong magic number: %d", magic);
             return;
     }
@@ -1557,8 +1563,10 @@ static void NET_SV_Packet(net_packet_t *packet, net_addr_t *addr)
             packet_type & ~NET_RELIABLE_PACKET);
     NET_LogPacket(packet);
 
+    fprintf(stderr, "SV_Packet: type=%d from %s\n", packet_type, NET_AddrToString(addr));
     if (packet_type == NET_PACKET_TYPE_SYN)
     {
+        fprintf(stderr, "SV_Packet: calling ParseSYN\n");
         NET_SV_ParseSYN(packet, client, addr);
     }
     else if (packet_type == NET_PACKET_TYPE_QUERY)

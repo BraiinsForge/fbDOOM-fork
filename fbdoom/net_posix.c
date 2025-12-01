@@ -28,10 +28,17 @@
 // We store this inside the (void *handle) of net_addr_t
 typedef struct {
   struct sockaddr_in sin;
-} posix_addr_handle_t;
+  net_addr_t net_addr;
+} posix_addr_entry_t;
 
 static int sockfd = -1;
 static uint16_t local_port = 0;
+static boolean is_bound = false;
+
+// Address table for reusing address objects (enables pointer comparison)
+#define ADDR_TABLE_SIZE 16
+static posix_addr_entry_t *addr_table[ADDR_TABLE_SIZE];
+static int addr_table_count = 0;
 
 // Forward declaration of the module
 net_module_t net_sdl_module;
@@ -40,30 +47,56 @@ net_module_t net_sdl_module;
 // If headers don't expose it, we declare it here.
 extern net_packet_t *NET_NewPacket(size_t len);
 
-//
-// Helper: Create a new address with our handle type
-//
-static net_addr_t *POSIX_NewAddress(struct sockaddr_in *sin) {
-  net_addr_t *addr;
-  posix_addr_handle_t *handle;
+// Check if two sockaddr_in are equal
+static boolean AddressesEqual(struct sockaddr_in *a, struct sockaddr_in *b) {
+  return a->sin_addr.s_addr == b->sin_addr.s_addr &&
+         a->sin_port == b->sin_port;
+}
 
-  addr = malloc(sizeof(net_addr_t));
-  if (addr == NULL)
-    return NULL;
+//
+// Helper: Find or create an address entry (reuses existing for same IP:port)
+//
+static net_addr_t *POSIX_FindAddress(struct sockaddr_in *sin) {
+  int i;
+  posix_addr_entry_t *entry;
 
-  handle = malloc(sizeof(posix_addr_handle_t));
-  if (handle == NULL) {
-    free(addr);
-    return NULL;
+  // Search for existing entry
+  for (i = 0; i < addr_table_count; i++) {
+    if (addr_table[i] != NULL && AddressesEqual(sin, &addr_table[i]->sin)) {
+      return &addr_table[i]->net_addr;
+    }
   }
 
-  handle->sin = *sin;
+  // Not found, create new entry
+  if (addr_table_count >= ADDR_TABLE_SIZE) {
+    // Table full - find a slot with refcount 0
+    for (i = 0; i < ADDR_TABLE_SIZE; i++) {
+      if (addr_table[i] != NULL && addr_table[i]->net_addr.refcount <= 0) {
+        free(addr_table[i]);
+        addr_table[i] = NULL;
+        break;
+      }
+    }
+    if (i >= ADDR_TABLE_SIZE) {
+      fprintf(stderr, "POSIX_FindAddress: address table full!\n");
+      return NULL;
+    }
+  } else {
+    i = addr_table_count++;
+  }
 
-  addr->module = &net_sdl_module;
-  addr->handle = handle;
-  addr->refcount = 1;
+  entry = malloc(sizeof(posix_addr_entry_t));
+  if (entry == NULL)
+    return NULL;
 
-  return addr;
+  entry->sin = *sin;
+  entry->net_addr.module = &net_sdl_module;
+  entry->net_addr.handle = &entry->sin;
+  entry->net_addr.refcount = 0;
+
+  addr_table[i] = entry;
+
+  return &entry->net_addr;
 }
 
 //
@@ -94,6 +127,10 @@ static boolean POSIX_InitClient(void) {
   if (!POSIX_Init())
     return false;
 
+  // Already bound (e.g., by server init) - just return success
+  if (is_bound)
+    return true;
+
   // Clients bind to any available port
   struct sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
@@ -106,12 +143,17 @@ static boolean POSIX_InitClient(void) {
     return false;
   }
 
+  is_bound = true;
   return true;
 }
 
 static boolean POSIX_InitServer(void) {
   if (!POSIX_Init())
     return false;
+
+  // Already bound - just return success
+  if (is_bound)
+    return true;
 
   // Servers bind to the specific Doom port (default 2342)
   struct sockaddr_in addr;
@@ -125,20 +167,30 @@ static boolean POSIX_InitServer(void) {
     return false;
   }
 
+  is_bound = true;
   local_port = DOOM_DEFAULT_PORT;
   return true;
 }
 
 static void POSIX_SendPacket(net_addr_t *addr, net_packet_t *packet) {
-  posix_addr_handle_t *handle;
+  struct sockaddr_in *sin;
+  char ip_str[INET_ADDRSTRLEN];
+  ssize_t sent;
 
   if (sockfd < 0 || addr == NULL || packet == NULL)
     return;
 
-  handle = (posix_addr_handle_t *)addr->handle;
+  sin = (struct sockaddr_in *)addr->handle;
 
-  sendto(sockfd, packet->data, packet->len, 0, (struct sockaddr *)&handle->sin,
-         sizeof(handle->sin));
+  inet_ntop(AF_INET, &(sin->sin_addr), ip_str, sizeof(ip_str));
+  fprintf(stderr, "NET_SEND: %zu bytes to %s:%d\n",
+          (size_t)packet->len, ip_str, ntohs(sin->sin_port));
+
+  sent = sendto(sockfd, packet->data, packet->len, 0, (struct sockaddr *)sin,
+         sizeof(*sin));
+  if (sent < 0) {
+    fprintf(stderr, "NET_SEND: sendto failed: %s\n", strerror(errno));
+  }
 }
 
 static boolean POSIX_RecvPacket(net_addr_t **addr, net_packet_t **packet) {
@@ -160,24 +212,25 @@ static boolean POSIX_RecvPacket(net_addr_t **addr, net_packet_t **packet) {
                  &fromlen);
 
   if (ret > 0) {
-    // 1. Create the address object
-    *addr = POSIX_NewAddress(&from);
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(from.sin_addr), ip_str, sizeof(ip_str));
+    fprintf(stderr, "NET_RECV: %d bytes from %s:%d\n",
+            ret, ip_str, ntohs(from.sin_port));
+
+    // 1. Find or create the address object (reuses for same IP:port)
+    *addr = POSIX_FindAddress(&from);
     if (*addr == NULL)
       return false;
 
     // 2. Create the packet object
     *packet = NET_NewPacket(ret);
     if (*packet == NULL) {
-      // Free the address we just made
-      // We can't call POSIX_FreeAddress directly easily without casting
-      // But we know the internals:
-      free((*addr)->handle);
-      free(*addr);
       return false;
     }
 
     // 3. Fill packet data
     memcpy((*packet)->data, buffer, ret);
+    (*packet)->len = ret;
 
     return true;
   }
@@ -186,18 +239,18 @@ static boolean POSIX_RecvPacket(net_addr_t **addr, net_packet_t **packet) {
 }
 
 static void POSIX_AddrToString(net_addr_t *addr, char *buffer, int buffer_len) {
-  posix_addr_handle_t *handle = (posix_addr_handle_t *)addr->handle;
+  struct sockaddr_in *sin = (struct sockaddr_in *)addr->handle;
   char ip_str[INET_ADDRSTRLEN];
 
-  inet_ntop(AF_INET, &(handle->sin.sin_addr), ip_str, sizeof(ip_str));
-  snprintf(buffer, buffer_len, "%s:%d", ip_str, ntohs(handle->sin.sin_port));
+  inet_ntop(AF_INET, &(sin->sin_addr), ip_str, sizeof(ip_str));
+  snprintf(buffer, buffer_len, "%s:%d", ip_str, ntohs(sin->sin_port));
 }
 
 static void POSIX_FreeAddress(net_addr_t *addr) {
-  if (addr->handle) {
-    free(addr->handle);
-    addr->handle = NULL;
-  }
+  // With the address table, we don't actually free addresses.
+  // They stay in the table for reuse. The table cleanup happens
+  // when it fills up and we find entries with refcount <= 0.
+  (void)addr;
 }
 
 static net_addr_t *POSIX_ResolveAddress(const char *address) {
@@ -237,7 +290,7 @@ static net_addr_t *POSIX_ResolveAddress(const char *address) {
   }
 
   free(addr_dup);
-  return POSIX_NewAddress(&sin);
+  return POSIX_FindAddress(&sin);
 }
 
 //

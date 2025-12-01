@@ -307,7 +307,7 @@ void D_StartGameLoop(void)
     lasttime = GetAdjustedTime() / ticdup;
 }
 
-#if ORIGCODE
+#ifdef FEATURE_MULTIPLAYER
 //
 // Block until the game start message is received from the server.
 //
@@ -340,7 +340,6 @@ static void BlockUntilStart(net_gamesettings_t *settings,
 void D_StartNetGame(net_gamesettings_t *settings,
                     netgame_startup_callback_t callback)
 {
-#if ORIGCODE
     int i;
 
     offsetms = 0;
@@ -361,13 +360,6 @@ void D_StartNetGame(net_gamesettings_t *settings,
         settings->new_sync = 1;
     else
         settings->new_sync = 0;
-
-    // TODO: New sync code is not enabled by default because it's
-    // currently broken. 
-    //if (M_CheckParm("-oldsync") > 0)
-    //    settings->new_sync = 0;
-    //else
-    //    settings->new_sync = 1;
 
     //!
     // @category net
@@ -399,6 +391,7 @@ void D_StartNetGame(net_gamesettings_t *settings,
     else
         settings->ticdup = 1;
 
+#ifdef FEATURE_MULTIPLAYER
     if (net_client_connected)
     {
         // Send our game settings and block until game start is received
@@ -416,6 +409,7 @@ void D_StartNetGame(net_gamesettings_t *settings,
     {
         settings->consoleplayer = 0;
     }
+#endif
 
     // Set the local player and playeringame[] values.
 
@@ -430,23 +424,6 @@ void D_StartNetGame(net_gamesettings_t *settings,
 
     ticdup = settings->ticdup;
     new_sync = settings->new_sync;
-
-    // TODO: Message disabled until we fix new_sync.
-    //if (!new_sync)
-    //{
-    //    printf("Syncing netgames like Vanilla Doom.\n");
-    //}
-#else
-    settings->consoleplayer = 0;
-	settings->num_players = 1;
-	settings->player_classes[0] = player_class;
-	settings->new_sync = 0;
-	settings->extratics = 1;
-	settings->ticdup = 1;
-
-	ticdup = settings->ticdup;
-	new_sync = settings->new_sync;
-#endif
 }
 
 boolean D_InitNetGame(net_connect_data_t *connect_data)

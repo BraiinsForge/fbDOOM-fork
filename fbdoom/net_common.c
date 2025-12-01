@@ -316,6 +316,8 @@ void NET_Conn_Run(net_connection_t *conn)
           || nowtime - conn->reliable_packets->last_send_time > 1000))
         {
             // Packet timed out, time to resend
+            fprintf(stderr, "NET_CONN: sending reliable packet to %s\n",
+                    NET_AddrToString(conn->addr));
 
             NET_Conn_SendPacket(conn, conn->reliable_packets->packet);
             conn->reliable_packets->last_send_time = nowtime;

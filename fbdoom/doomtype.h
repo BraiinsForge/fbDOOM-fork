@@ -43,6 +43,8 @@
 // to disk.
 //
 
+#include "doomfeatures.h"
+
 #ifdef __GNUC__
 #define PACKEDATTR __attribute__((packed))
 #else

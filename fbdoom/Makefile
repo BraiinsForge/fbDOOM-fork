@@ -22,7 +22,7 @@ OBJS+=$(OBJDIR)/i_input_tty.o
 CC=$(CROSS_COMPILE)gcc  # gcc or g++
 CFLAGS+=-ggdb3 -Os
 LDFLAGS+=-Wl,--gc-sections
-CFLAGS+=-ggdb3 -Wall -std=gnu99 -DNORMALUNIX -DLINUX -DSNDSERV # -DUSEASM
+CFLAGS+=-ggdb3 -Wall -std=gnu99 -DNORMALUNIX -DLINUX -DSNDSERV -DFEATURE_MULTIPLAYER # -DUSEASM
 LIBS+=-lm -lc
 
 ifneq ($(NOSDL),1)
