@@ -14,17 +14,17 @@
 //
 // DESCRIPTION:
 //      Miscellaneous.
-//    
-
+//
 
 #ifndef __M_MISC__
 #define __M_MISC__
 
-#include <stdio.h>
 #include <stdarg.h>
+#include <stdio.h>
 
 #include "doomtype.h"
 
+FILE *M_fopen(const char *filename, const char *mode);
 boolean M_WriteFile(char *name, void *source, int length);
 int M_ReadFile(char *name, byte **buffer);
 void M_MakeDirectory(char *dir);
@@ -34,6 +34,7 @@ long M_FileLength(FILE *handle);
 boolean M_StrToInt(const char *str, int *result);
 void M_ExtractFileBase(char *path, char *dest);
 void M_ForceUppercase(char *text);
+void M_ForceLowercase(char *text);
 char *M_StrCaseStr(char *haystack, char *needle);
 char *M_StringDuplicate(const char *orig);
 boolean M_StringCopy(char *dest, const char *src, size_t dest_size);
@@ -48,4 +49,3 @@ int M_snprintf(char *buf, size_t buf_len, const char *s, ...);
 char *M_OEMToUTF8(const char *ansi);
 
 #endif
-

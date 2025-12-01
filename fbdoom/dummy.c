@@ -5,7 +5,6 @@
  *      Author: Florian
  */
 
-
 /*---------------------------------------------------------------------*
  *  include files                                                      *
  *---------------------------------------------------------------------*/
@@ -24,9 +23,9 @@
  *  public data                                                        *
  *---------------------------------------------------------------------*/
 
-boolean net_client_connected = false;
+// boolean net_client_connected = false;
 
-boolean drone = false;
+// boolean drone = false;
 
 /*---------------------------------------------------------------------*
  *  private data                                                       *
@@ -40,9 +39,7 @@ boolean drone = false;
  *  public functions                                                   *
  *---------------------------------------------------------------------*/
 
-void I_InitTimidityConfig(void)
-{
-}
+void I_InitTimidityConfig(void) {}
 
 /*---------------------------------------------------------------------*
  *  eof                                                                *

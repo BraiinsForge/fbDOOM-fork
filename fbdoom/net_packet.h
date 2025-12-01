@@ -38,7 +38,7 @@ void NET_WriteInt8(net_packet_t *packet, unsigned int i);
 void NET_WriteInt16(net_packet_t *packet, unsigned int i);
 void NET_WriteInt32(net_packet_t *packet, unsigned int i);
 
-void NET_WriteString(net_packet_t *packet, char *string);
+void NET_WriteString(net_packet_t *packet, const char *string);
+char *NET_ReadSafeString(net_packet_t *packet);
 
 #endif /* #ifndef NET_PACKET_H */
-
